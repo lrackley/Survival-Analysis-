@@ -1,0 +1,410 @@
+---
+title: "Assessing 5-FU + levamisole treatment effficacy in colorectal cancer - presented Wednesday at 11:15 am"
+author: "Lauren Rackley"
+date: "`r Sys.Date()`"
+output:
+  pdf_document:
+  extra_dependencies: [float]
+  latex_engine: xelatex
+  fontsize: 12pt
+keep_tex: true
+linestretch: 1.5
+geometry: margin=.5in
+header-includes:
+  - \usepackage{lmodern}
+bibliography: 680.bib
+csl: apa.csl
+---
+```{r, echo=FALSE}
+#| label: setup
+suppressPackageStartupMessages({
+library(dplyr) # for data manipulation
+library(survival) # for survival analysis
+library(survminer) # for plotting K-M curves
+library(gtsummary) # for Table 1
+library(StepReg) # for stepwise selection
+library(lubridate) # for making dates
+library(gt)
+library(ggplot2) # for plotting
+library(gridExtra) # for arranging plots
+library(kableExtra)
+})
+# read in data
+colon_raw <- read.table("/Users/laurenrackley/Desktop/Fall 2025/BIOS 680/HW 11/Data/project_Colon.dat",
+                    header=F,na.strings=".")
+# assign variable names
+colnames(colon_raw) <- c("patno","trno","mthreg","dayreg","yrreg",
+                     "mthlc","daylc",
+                     "yrlc","status","prgrel","mthprgrel","dayprgrel",
+                     "yrprgrel","sex","age","pt1site","histype","cdifintg",
+                     "extloc","obstrc","perfor","adhere","regimp",
+                     "organs","serosa","days","nodes"
+)
+
+colon <- colon_raw %>%
+  mutate(across(starts_with("yr"), ~ . + 1900),
+         
+         regdate=make_date(day=dayreg,year=yrreg,month=mthreg),
+         
+         lcdate=make_date(day=daylc,year=yrlc,month=mthlc),
+         
+         prgdate=make_date(day=dayprgrel,year=yrprgrel,month=mthprgrel),
+         
+         # OS - last date/death date - registration date + 1 / 365.25 to get years
+         fu_time = (as.numeric(lcdate - regdate) + 1)/365.25,
+         
+         # min prg date
+         min_prgdate=pmin(prgdate, lcdate,na.rm=T),
+         
+         # PFS - (min_prgdate - regdate + 1) / 365.25 to get years
+         prg_time = (as.numeric(min_prgdate - regdate) + 1)/365.25,
+         
+         arm = case_when(
+           trno == 1 ~ "Control",
+           trno == 2 ~ "Levamisole only",
+           trno == 3 ~ "5-FU + Levamisole",
+           # Optional: Handle any missing values or unexpected codes
+           TRUE ~ NA_character_
+         ),
+        days=factor(
+          days,
+          levels=c(0,1),
+          labels=c("7-20 days after surgery","21-30 days after surgery"),
+          ordered=T),
+         sex=factor(
+           sex,
+           levels=c(1,2),
+           labels=c("Male","Female"),
+           ordered=T),
+         nodes = factor(
+           nodes,
+           levels = c(0, 1), 
+           labels = c("1-4", ">4"), 
+           ordered = TRUE
+         ),
+         extloc=factor(
+           extloc,
+           levels=c(1,2,3,4),
+           labels=c("Submucosa/not muscle","Muscular/not serosa",
+                    "Serosa/not contiguous",
+                    "Contiguous structures"),
+           ordered=T),
+         cdifintg=factor(
+           cdifintg,
+           levels=c(1,2,3),
+           labels=c("Well","Moderate well (gr 2-3)","Poor (grade 4)"),
+           ordered=T),
+        histype=factor(
+          histype,
+          levels=c(1,2,3,4),
+          labels=c("Adenocarcinoma","Colloid(mucinous)","Signet ring type","Other"),
+          ordered=T),
+        pt1site=factor(
+          pt1site,
+          levels=c(1,2,3,4,5,6,7,8,9,10),
+          labels=c("Cecum neoplasm","Right colon","Hepatic flexure","Transverse colon",
+                   "Splenic flexure","Left colon","Sigmoid colon","Rectosigmoid","Rectum",
+                   "Multiple sites"),
+          ordered=T),
+        obstrc=factor(
+          obstrc,
+          levels=c(1,0),
+          labels=c("Yes","No"),
+          ordered=T),
+        regimp=factor(
+          regimp,
+          levels=c(1,0),
+          labels=c("Yes","No"),
+          ordered=T
+        ),
+        perfor=factor(
+          perfor,
+          levels=c(1,0),
+          labels=c("Yes","No"),
+          ordered=T),
+        adhere=factor(
+          adhere,
+          levels=c(1,0),
+          labels=c("Yes","No"),
+          ordered=T),
+        organs=factor(
+          organs,
+          levels=c(1,0),
+          labels=c("Yes","No"),
+          ordered=T),
+        serosa=factor(
+          serosa,
+          levels=c(1,0),
+          labels=c("Yes","No"),
+          ordered=T
+        )
+      ) 
+```
+## Abstract
+**Purpose** We aim to assess prognostic factors for CRC and efficacy of three treatments: surgery alone, levamisole alone, and levamisole + 5-FU.\
+**Methods** Three hundred and sixty three patients participated in the randomized controlled trial. There were 125 patients in the control group, 120 in levamisole group, and 118 in the levamisole + 5-FU group. A Cox model was fit to examine prognostic factors. Progression-free survival (PFS) and overall survival (OS) times were calculated with Kaplan-Meier methods.\
+**Results** Levamisole + 5-FU had higher OS and PFS rates as compared to levamisole alone.\
+**Conclusion** Levamisole + 5-FU is an effective treatment for CRC (HR = 0.68 (0.45,1.02), p = 0.059).
+
+## Introduction 
+Worldwide, colorectal cancer (CRC) is the second most common cause of cancer-related deaths. In 2020, approximately 1.9 million people were diagnosed with CRC and 915,000 patients died from CRC [@yu_using_2023]. Treatment outcomes after resection are excellent. Adjuvant chemotherapy, such as 5-FU can improve both disease-free and overall survival for patients with stage III CRC [@yu_using_2023]. Postoperative adjuvant chemotherapy is a controversial issue for stage II CRC. Perforation, obstruction, and poor differentiation are all high-risk factors for stage II CRC. As many as 40-50% of patients with locoregional lymph node metastasis at diagnosis relapse when treated with surgery alone [@akdeniz_comparison_2021]. The objective of this project is to assess prognostic factors for CRC and efficacy of surgery alone, levamisole, and 5-FU + levamisole. 
+
+## Methods
+### Study population 
+Three hundred and sixty-three patients participated in the study and were randomized to surgery alone, levamisole + 5-FU, or levamisole only. 
+
+### Statistical analysis 
+Statistical analyses were performed using R (version 4.5.2, R Core Team, 2025). Frequencies and percentages were reported for categorical variables. Median, min, and max were reported for age. An $\alpha$ level of $<0.05$ was considered statistically significant. Kaplan-Meier methods were used to assess overall survival (OS) and progression-free survival (PFS). OS was defined as time in years since registration until death or last known contact date. PFS was defined time from registration until progression/recurrence. Log-rank test was used to assess differences between treatment groups. A full Cox model was fit with all available predictors and a reduced model was fit using predictors from the full model with $p < 0.05$. A Likelihood Ratio Test was used to compare full and reduced models. Hazard ratios (HR) and 95% confidence intervals (CI) from the final model were calculated.
+
+## Results
+Three hundred sixty-three patients enrolled in the study. Among them, 125 patients were in the control group, 120 patients were in levamisole only group, and 118 patients were in the levamisole+5-FU group. Median age at diagnosis was 61 years for the entire population. Median age for control, levamisole, and levamisole+5-FU groups were 62,61,and 61 years, respectively. Table 1 contains a summary of patient characteristics.
+
+### Survival
+Sixty (48.0%) patients in the control group, 49 (40.8%) patients in levamisole only group, and 43 (36.4%) patients in levamisole+5-FU experienced relapse. Median OS was 3.5 years in control group, not estimable in levamisole group, and not estimable in 5-FU + levamisole group. Median PFS was 2.9 years in control group, and not estimable in levamisole and levamisole + 5-FU groups. The 2-year and 4-year PFS rates were 68% and 59%, respectively, for 5-FU + levamisole (Table 4). The 2-year and 4-year OS rates were 82% and 72%, respectively, for 5-FU + levamisole. Both PFS and OS 2-year and 4-year survival rates were higher for 5-FU + levamisole group than the other two groups. A marginally significant difference $(p = 0.052)$ was observed between the three groups for PFS. Similarly, a statistically significantly difference was found between the three groups for OS $(p = 0.043)$. 
+
+A full Cox proportional hazards model was fit with all predictors for PFS. Predictors were kept in the model if the p-value was $<0.05$. A reduced model was then fit. The full and reduced models were compared with LRT. The LRT statistic was 31.996 $(p=0.059)$ so the reduced model was used. The reduced model included treatment, extent of spread, primary site, histology type, nodes, and differentiation. The HR for 5-FU + levamisole vs. placebo was 0.68, indicating that the hazard of relapse is 32% lower in patients taking 5-FU + levamisole vs placebo when holding all other predictors constant. The HR for levamisole only is 0.81, indicating that the hazard of relapse is 19% lower in patients taking levamisole only vs placebo when holding all other predictors constant. Nodal involvement was a highly significant prognostic factor in the model $(p <.001)$. Results from the reduced Cox model are shown in Table 4. PH assumption was checked by plotting Schoenfeld residuals. 
+
+## Discussion
+We compared three different treatment types for CRC. Although the p-value was only marginally significant in the Cox model, the HR suggests that 5-FU + levamisole was the best treatment regimen. Additionally, the 5-FU + levamisole group had higher rates of survival for both OS and PFS. However, this data was quite old. Future research should focus on later treatments that have been developed in the time since this data was collected. 
+
+\newpage
+```{r,echo=FALSE,message=FALSE, warning=FALSE}
+#| label: table1
+surv_object <- Surv(colon$prg_time,colon$prgrel)
+#logrank_test <- survdiff(surv_object ~ colon$arm)
+#logrank_test
+  
+
+
+#pairwise_survdiff(
+  #Surv(fu_time, status) ~ arm,
+  #data = colon,
+  #p.adjust.method = "none"   # or "bonferroni", "holm"
+#)
+
+colon$arm <- factor(
+  colon$arm,
+  levels = c("Control","Levamisole only","5-FU + Levamisole"),
+  ordered = TRUE
+)
+
+# table 1
+tbl1 <- colon %>%
+  # Create the summary table
+  tbl_summary(
+    by = arm,
+    type=list(
+      c(extloc, cdifintg, adhere, regimp, organs, serosa, obstrc, perfor) ~ "categorical",
+      all_continuous()~"continuous2"),
+    include=c(age,sex,extloc,nodes,pt1site,
+              histype,cdifintg,days,adhere,regimp,organs,serosa,obstrc,
+              perfor),
+    label = list(
+      age ~ "Age (Years)",
+      sex ~ "Sex",
+      extloc ~ "Extent of local spread",
+      nodes ~ "Nodal involvement",
+      pt1site ~ "Location of primary neoplasm",
+      histype~"Histologic type",
+      cdifintg~"Differentiation",
+      adhere~"Adherence",
+      regimp~"Regional implants",
+      organs~"Organ involvement",
+      serosa~"Serosal involvement",
+      days~"Initiation of therapy",
+      obstrc~"Obstruction",
+      perfor~"Perforation"
+      
+    ),
+    
+    # 1. Customize the statistics format
+    statistic = list(
+      all_categorical() ~ "{n} ({p}%)",
+      age ~ c(
+        "{median}",
+        "{min}, {max}")
+      
+    )
+  ) %>%
+  
+  # Final Formatting
+  modify_caption("**Patient Characteristics**") %>%
+  bold_labels() |>
+  modify_header(all_stat_cols() ~ "**{level}** (N = {n})") |>
+  modify_footnote(
+    all_stat_cols() ~ 
+      "5-FU=fluorouracil",
+    abbreviation = FALSE
+  ) 
+
+
+#  as_gt() |>
+#  gt::opt_table_font(
+  #  size = gt::px(12) 
+#  ) 
+tbl1<-as_kable_extra(tbl1,
+               booktabs=TRUE,
+               longtable=TRUE,
+               linesep="",
+               caption = "Patient Characteristics",
+               table.envir = "table")
+tbl1
+```
+
+```{r, echo=FALSE,warning=FALSE,fig.width=9, fig.height=4}
+#| label: KM-plots
+
+# calculating PFS 
+PFS_surv_fit <- survfit(Surv(prg_time, prgrel) ~ arm, data = colon)
+PFS_plot <- ggsurvplot(PFS_surv_fit, legend=c(0.7,0.2),data = colon,pval=T,
+           xlab = "Years since registration",ylab="Progression-Free Survival",title="Fig. 1 K-M curve of PFS")
+           
+# calculating OS
+OS_surv_fit <- survfit(Surv(fu_time,status)~arm,data=colon)
+OS_plot <- ggsurvplot(OS_surv_fit,data=colon,legend=c(0.7,0.2),pval=TRUE,
+           xlab="Years since registration",ylab="Overall Survival",title="Fig. 2 K-M curve of overall survival")
+arrange_ggsurvplots(
+  list(PFS_plot, OS_plot),  # list of ggsurvplot objects
+  ncol = 2,                 # 1 column
+  nrow = 1,                 # 2 rows
+  print = TRUE              # automatically prints in PDF
+)
+```
+```{r,echo=FALSE}
+tbl2 <- tbl_survfit(
+  colon,
+  y = "Surv(fu_time, status)",
+  include = arm,
+  probs = 0.5,
+  label_header = "Median Survival"
+) |>
+   modify_caption("Overall Survival by Arm")
+
+tbl3 <- tbl_survfit(
+  colon,
+  y="Surv(prg_time,prgrel)",
+  include=arm,
+  probs=0.5,
+  label_header= "Median Survival"
+) |> 
+  modify_caption("Progression-Free Survival by Arm")
+
+```
+\newpage
+```{r,echo=FALSE}
+# Table 1: Progression-Free Survival (PFS)
+tbl_pfs <- tbl_survfit(
+  PFS_surv_fit, 
+  times = c(2, 4),
+
+  label=list(arm="Treatment Regimen"),
+  label_header = "**{time} Year RFS (%)**" 
+) |>
+  modify_header(label = "**Factor**") |>
+  add_nevent()
+
+# Table 2: Overall Survival (OS)
+tbl_os <- tbl_survfit(
+  OS_surv_fit, 
+  times = c(2, 4),
+  label=list(arm="Treatment Regimen"),
+  label_header = "**{time} Year OS (%)**" 
+) |>
+  modify_header(label = "**Factor**") |>
+  add_nevent()
+
+# --- 4. Merge the two tables side-by-side ---
+
+final_table <- tbl_merge(
+  list(tbl_pfs, tbl_os),
+  tab_spanner = c("**RFS**", "**OS**"), # Spanning headers for the two sections
+) |> 
+  modify_caption("2-year and 4-year survival for OS and RFS")
+
+final_table<-as_kable_extra(final_table,
+               booktabs=TRUE,
+               longtable=TRUE,
+               linesep="",
+               caption = "2-year and 4-year survival for OS and RFS",
+               table.envir = "table")
+final_table
+
+```
+
+```{r,echo=FALSE}
+#| label: CoxPH
+
+colon_raw$extloc <- as.factor(colon_raw$extloc)
+colon_raw$sex <- as.factor(colon_raw$sex)
+colon_raw$pt1site <- as.factor(colon_raw$pt1site)
+colon_raw$histype <- factor(colon_raw$histype,
+          levels=c(1,2,3,4),
+          labels=c("Adenocarcinoma","Colloid(mucinous)","Signet ring type","Other"))
+colon_raw$obstrc <- as.factor(colon_raw$obstrc)
+colon_raw$perfor <- as.factor(colon_raw$perfor)
+colon_raw$adhere <- as.factor(colon_raw$adhere)
+colon_raw$regimp <- as.factor(colon_raw$regimp)
+colon_raw$serosa <- as.factor(colon_raw$serosa)
+colon_raw$days <- as.factor(colon_raw$days) 
+colon_raw$organs <- as.factor(colon_raw$organs)
+colon_raw$nodes <- factor(
+           colon_raw$nodes,
+           levels = c(0, 1), 
+           labels = c("1-4", ">4"))
+colon_raw$trno <- factor(colon_raw$trno,levels=c(1,2,3),labels=c("Control","Levamisole only","Levamisole + 5-FU"))
+colon_raw$cdifintg <- as.factor(colon_raw$cdifintg)
+colon_raw <- colon_raw |>
+  dplyr::mutate(across(starts_with("yr"), ~ . + 1900),
+         
+         regdate=make_date(day=dayreg,year=yrreg,month=mthreg),
+         
+         lcdate=make_date(day=daylc,year=yrlc,month=mthlc),
+         
+         prgdate=make_date(day=dayprgrel,year=yrprgrel,month=mthprgrel),
+         
+         # OS - last date/death date - registration date + 1 / 365.25 to get years
+         fu_time = (as.numeric(lcdate - regdate) + 1)/365.25,
+         
+         # min prg date
+         min_prgdate=pmin(prgdate, lcdate,na.rm=T),
+         
+         # PFS - (min_prgdate - regdate + 1) / 365.25 to get years
+         prg_time = (as.numeric(min_prgdate - regdate) + 1)/365.25)
+all_vars <- c("trno", "extloc", "sex", "pt1site", "histype", "obstrc", "perfor", 
+              "adhere", "regimp", "serosa", "days", "organs", "nodes", "cdifintg")
+colon_complete <- colon_raw %>%
+  dplyr::select(prg_time, prgrel, all_of(all_vars)) %>%
+  na.omit()
+
+cox_full <- coxph(Surv(prg_time,prgrel) ~trno + extloc + sex + pt1site + histype + obstrc + perfor + adhere + regimp + serosa + days + organs + nodes + cdifintg,data=colon_complete)
+#summary(cox_full)
+
+cox_reduced <- coxph(Surv(prg_time,prgrel)~trno + histype + nodes,
+                     data=colon_complete)
+
+# Check PH assumption
+#cz <- cox.zph(cox_reduced)
+#print(cz)
+#plot(cz)
+
+#summary(cox_reduced)
+anova(cox_full,cox_reduced) |>
+  kable(digits=3,
+        caption="LRT Results Comparing Cox Full vs. Cox Reduced")
+
+tbl_cox <- cox_reduced %>%
+  tbl_regression(exponentiate = TRUE,
+                 label = list(histype="Histologic type",nodes="Nodal involvement",trno="Treatment group")) |>
+  modify_header(label = "**Factor**")
+
+tbl_cox<-as_kable_extra(tbl_cox,
+               booktabs=TRUE,
+               longtable=TRUE,
+               linesep="",
+               caption = "Reduced Cox Model Regression Results",
+               table.envir = "table")
+tbl_cox
+```
+\newpage
+## References
+
